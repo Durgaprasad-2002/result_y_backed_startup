@@ -1,0 +1,29 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/server.js",
+    "build": "node --check src/server.js && node --check src/chat.js && node --check src/videoGenerator.js",
+    "start": "node src/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.60.0",
+    "@prisma/client": "^6.14.0",
+    "cheerio": "^1.1.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "ffmpeg-static": "^5.2.0",
+    "nanoid": "^5.1.5",
+    "sharp": "^0.34.3",
+    "zod": "^4.0.17"
+  },
+  "devDependencies": {
+    "prisma": "^6.14.0",
+    "tsx": "^4.20.4"
+  }
+}

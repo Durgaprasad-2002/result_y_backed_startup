@@ -1,0 +1,19 @@
+{
+  "name": "result-ugc-chat",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace backend\" \"npm run dev --workspace frontend\"",
+    "install:all": "npm install --workspaces",
+    "build": "npm run build --workspace backend && npm run build --workspace frontend",
+    "prisma:generate": "npm run prisma:generate --workspace backend",
+    "prisma:push": "npm run prisma:push --workspace backend"
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
