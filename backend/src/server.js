@@ -92,10 +92,26 @@ app.post("/api/chat", async (req, res, next) => {
       take: 20,
     });
 
+    // Set up SSE headers
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const sendEvent = (event, data) => {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    // Initial event
+    sendEvent("start", { conversationId: activeConversation.id });
+
     const reply = await handleChatTurn({
       message: body.message,
       conversation: activeConversation,
       history,
+      onProgress: (progress) => {
+        sendEvent("progress", progress);
+      },
     });
 
     const assistantMessage = await prisma.message.create({
@@ -108,13 +124,24 @@ app.post("/api/chat", async (req, res, next) => {
       },
     });
 
-    res.json({
+    // Final result event
+    sendEvent("done", {
       conversationId: activeConversation.id,
       message: assistantMessage,
       video: reply.video,
     });
+
+    res.end();
   } catch (error) {
-    next(error);
+    // If headers haven't been sent yet, we can send a standard 500
+    if (!res.headersSent) {
+      next(error);
+    } else {
+      // If we're in the middle of an SSE stream, send an error event
+      res.write(`event: error\n`);
+      res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+      res.end();
+    }
   }
 });
 

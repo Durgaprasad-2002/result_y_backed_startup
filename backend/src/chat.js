@@ -1,11 +1,18 @@
-import axios from "axios";
+import OpenAI from "openai";
 import { extractUrl, readProductPage } from "./product.js";
 import { generateUgcVideo } from "./videoGenerator.js";
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+const GPT_MODEL = process.env.GPT_MODEL || "gpt-4o";
 
-export async function handleChatTurn({ message, conversation, history }) {
+export async function handleChatTurn({
+  message,
+  conversation,
+  history,
+  onProgress,
+}) {
   const url = extractUrl(message);
   const asksForVideo =
     /\b(video|ugc|ad|creative|short|tiktok|reel|promo)\b/i.test(message);
@@ -18,12 +25,18 @@ export async function handleChatTurn({ message, conversation, history }) {
     };
   }
 
+  if (onProgress) onProgress({ status: "scraping", url });
   const pageData = await readProductPage(url);
-  const script = await generateScriptWithGemini(message, pageData);
+
+  if (onProgress) onProgress({ status: "generating_script", pageData });
+  const script = await generateScriptWithGPT(message, pageData);
+
+  if (onProgress) onProgress({ status: "generating_video", script });
   const video = await generateUgcVideo({
     conversationId: conversation.id,
     pageData,
     script,
+    onProgress,
   });
 
   return {
@@ -35,43 +48,41 @@ export async function handleChatTurn({ message, conversation, history }) {
 async function conversationalReply(message, history) {
   const fallback =
     "Hey! Send me a product URL and I’ll turn it into a punchy little UGC video.";
-  if (!GEMINI_API_KEY) return fallback;
+  if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === "sk-xxxx")
+    return fallback;
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-    const systemPrompt =
-      "You are a concise, friendly assistant inside a UGC video generator. Reply naturally. If asked what you do, say you can generate UGC videos from product URLs.";
-
-    const contents = [
-      ...history.slice(-8).map((item) => ({
-        role: item.role === "USER" ? "user" : "model",
-        parts: [{ text: item.content }],
-      })),
-      { role: "user", parts: [{ text: message }] },
-    ];
-
-    const response = await axios.post(url, {
-      systemInstruction: { role: "system", parts: [{ text: systemPrompt }] },
-      contents,
-      generationConfig: { temperature: 0.7, maxOutputTokens: 220 },
+    const feedbackResponse = await openai.chat.completions.create({
+      model: GPT_MODEL,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a concise, friendly assistant inside a UGC video generator. Reply naturally. If asked what you do, say you can generate UGC videos from product URLs.",
+        },
+        ...history.slice(-8).map((item) => ({
+          role: item.role === "USER" ? "user" : "assistant",
+          content: item.content,
+        })),
+        { role: "user", content: message },
+      ],
+      max_tokens: 300,
+      temperature: 0.7,
     });
 
-    return (
-      response.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
-      fallback
-    );
+    return feedbackResponse.choices[0].message.content.trim();
   } catch (err) {
-    console.error("Gemini conversational error:", err.message);
+    console.error("GPT conversational error:", err.message);
     return fallback;
   }
 }
 
-async function generateScriptWithGemini(userMessage, pageData) {
+async function generateScriptWithGPT(userMessage, pageData) {
   const systemPrompt = `You are a UGC (user-generated content) video script writer.
 You will be given a user's request and scraped data from a product/landing page.
 Analyze the product and write a short, casual, authentic-sounding UGC ad script.
 
-Respond ONLY with valid JSON (no markdown fences, no preamble), matching this schema:
+Respond ONLY with valid JSON, matching this schema:
 {
   "product_name": string,
   "scenes": [
@@ -94,39 +105,16 @@ Description: ${pageData.description}
 Page text (excerpt): ${pageData.bodyText.slice(0, 3000)}
 Source URL: ${pageData.sourceUrl}`;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const response = await openai.chat.completions.create({
+    model: GPT_MODEL,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    response_format: { type: "json_object" },
+    temperature: 0.8,
+  });
 
-  const response = await axios.post(
-    url,
-    {
-      systemInstruction: {
-        role: "system",
-        parts: [{ text: systemPrompt }],
-      },
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: userPrompt }],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.8,
-        maxOutputTokens: 1500,
-        responseMimeType: "application/json",
-      },
-    },
-    { headers: { "Content-Type": "application/json" } },
-  );
-
-  const raw = response.data.candidates?.[0]?.content?.parts
-    ?.map((p) => p.text)
-    .join("\n")
-    .trim();
-
-  if (!raw) {
-    throw new Error("Gemini returned no text content");
-  }
-
-  const cleaned = raw.replace(/^```json\s*/i, "").replace(/```$/, "");
-  return JSON.parse(cleaned);
+  const raw = response.choices[0].message.content;
+  return JSON.parse(raw);
 }

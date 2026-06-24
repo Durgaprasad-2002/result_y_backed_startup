@@ -151,12 +151,20 @@ function concatClips(clipFiles, outFile, jobDir) {
 // ---------------------------------------------------------------------------
 // MAIN PIPELINE ORCHESTRATOR
 // ---------------------------------------------------------------------------
-export async function generateUgcVideo({ conversationId, pageData, script }) {
+export async function generateUgcVideo({
+  conversationId,
+  pageData,
+  script,
+  onProgress,
+}) {
   const jobId = uuidv4();
   const jobDir = path.join(STORAGE_DIR, "work", jobId);
   if (!fs.existsSync(jobDir)) fs.mkdirSync(jobDir, { recursive: true });
 
-  const log = (msg) => console.log(`[${jobId}] ${msg}`);
+  const log = (msg) => {
+    console.log(`[${jobId}] ${msg}`);
+    if (onProgress) onProgress({ status: "processing", message: msg });
+  };
 
   log("Step 3/6: Building scenes (voiceover + visuals)...");
   const clipFiles = [];
@@ -166,6 +174,15 @@ export async function generateUgcVideo({ conversationId, pageData, script }) {
     const audioFile = path.join(jobDir, `scene_${i}.mp3`);
     const imageFile = path.join(jobDir, `scene_${i}.jpg`);
     const clipFile = path.join(jobDir, `clip_${i}.mp4`);
+
+    if (onProgress) {
+      onProgress({
+        status: "building_scene",
+        sceneIndex: i,
+        totalScenes: script.scenes.length,
+        sceneId: scene.id,
+      });
+    }
 
     // 3a. Voiceover
     const voiceResult = await generateVoiceover(
