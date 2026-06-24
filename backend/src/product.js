@@ -1,6 +1,8 @@
+import axios from "axios";
 import * as cheerio from "cheerio";
 
-const URL_PATTERN = /(https?:\/\/[^\s)]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s)]*)?)/i;
+const URL_PATTERN =
+  /(https?:\/\/[^\s)]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s)]*)?)/i;
 
 export function extractUrl(text) {
   const match = text.match(URL_PATTERN);
@@ -13,61 +15,55 @@ export async function readProductPage(url) {
   if (!url) return null;
 
   try {
-    const response = await fetch(url, {
-      headers: {
-        "user-agent":
-          "Mozilla/5.0 (compatible; ResultUGCBot/1.0; +https://example.com/bot)"
-      },
-      redirect: "follow",
-      signal: AbortSignal.timeout(9000)
+    const { data: html } = await axios.get(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (UGC-Pipeline-Bot)" },
+      timeout: 15000,
     });
-
-    const html = await response.text();
     const $ = cheerio.load(html);
-    $("script, style, noscript, svg").remove();
 
-    const meta = (name) =>
-      $(`meta[property="${name}"]`).attr("content") ||
-      $(`meta[name="${name}"]`).attr("content") ||
+    const title =
+      $('meta[property="og:title"]').attr("content") ||
+      $("title").text().trim();
+    const description =
+      $('meta[property="og:description"]').attr("content") ||
+      $('meta[name="description"]').attr("content") ||
       "";
 
-    const title = meta("og:title") || $("title").first().text() || new URL(url).hostname;
-    const description =
-      meta("og:description") ||
-      meta("description") ||
-      $("h1").first().text() ||
-      $("body").text().replace(/\s+/g, " ").trim().slice(0, 240);
-    const image = absolutize(meta("og:image") || meta("twitter:image"), url);
-    const bodyText = $("body").text().replace(/\s+/g, " ").trim().slice(0, 1800);
+    // Grab visible body text (trimmed, deduped, capped)
+    const bodyText = $("body")
+      .find("p, li, h1, h2, h3")
+      .map((_, el) => $(el).text().trim())
+      .get()
+      .filter(Boolean)
+      .join(" ")
+      .slice(0, 6000);
+
+    // Collect candidate product images (absolute URLs only)
+    const images = [];
+    $("img").each((_, el) => {
+      let src = $(el).attr("src") || $(el).attr("data-src");
+      if (!src) return;
+      try {
+        src = new URL(src, url).toString();
+        if (/\.(jpe?g|png|webp)(\?|$)/i.test(src)) images.push(src);
+      } catch (_) {}
+    });
 
     return {
-      url,
-      title: clean(title),
-      description: clean(description),
-      image,
-      bodyText
+      title: title || "",
+      description: description || "",
+      bodyText,
+      images: [...new Set(images)].slice(0, 8),
+      sourceUrl: url,
     };
   } catch (error) {
+    console.error("Scraping failed:", error.message);
     return {
-      url,
       title: new URL(url).hostname.replace(/^www\./, ""),
-      description: "Product page could not be fetched, so the brief uses the URL and chat context.",
-      image: null,
+      description: "Scraping failed.",
       bodyText: "",
-      fetchError: error.message
+      images: [],
+      sourceUrl: url,
     };
-  }
-}
-
-function clean(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
-}
-
-function absolutize(value, base) {
-  if (!value) return null;
-  try {
-    return new URL(value, base).toString();
-  } catch {
-    return null;
   }
 }

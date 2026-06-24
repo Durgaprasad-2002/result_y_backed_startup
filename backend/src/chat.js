@@ -1,12 +1,9 @@
-import Anthropic from "@anthropic-ai/sdk";
+import axios from "axios";
 import { extractUrl, readProductPage } from "./product.js";
 import { generateUgcVideo } from "./videoGenerator.js";
 
-const anthropic = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  : null;
-
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-3-5-haiku-20241022";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 export async function handleChatTurn({ message, conversation, history }) {
   const url = extractUrl(message);
@@ -21,131 +18,115 @@ export async function handleChatTurn({ message, conversation, history }) {
     };
   }
 
-  const product = await readProductPage(url);
-  const brief = await createCreativeBrief({ userMessage: message, product });
+  const pageData = await readProductPage(url);
+  const script = await generateScriptWithGemini(message, pageData);
   const video = await generateUgcVideo({
     conversationId: conversation.id,
-    product,
-    brief,
+    pageData,
+    script,
   });
 
   return {
-    content: `I made a short UGC-style video for ${brief.productName}. ${brief.caption}\n\n${video.publicUrl}`,
+    content: `I made a short UGC-style video for ${script.product_name}. ${script.scenes[0].on_screen_text}\n\n${video.publicUrl}`,
     video,
   };
 }
 
 async function conversationalReply(message, history) {
-  const fallback = localConversation(message);
-  if (!anthropic) return fallback;
+  const fallback =
+    "Hey! Send me a product URL and I’ll turn it into a punchy little UGC video.";
+  if (!GEMINI_API_KEY) return fallback;
 
   try {
-    const response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 220,
-      temperature: 0.7,
-      system:
-        "You are a concise, friendly assistant inside a UGC video generator. Reply naturally. If asked what you do, say you can generate UGC videos from product URLs.",
-      messages: [
-        ...history.slice(-8).map((item) => ({
-          role: item.role === "USER" ? "user" : "assistant",
-          content: item.content,
-        })),
-        { role: "user", content: message },
-      ],
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const systemPrompt =
+      "You are a concise, friendly assistant inside a UGC video generator. Reply naturally. If asked what you do, say you can generate UGC videos from product URLs.";
+
+    const contents = [
+      ...history.slice(-8).map((item) => ({
+        role: item.role === "USER" ? "user" : "model",
+        parts: [{ text: item.content }],
+      })),
+      { role: "user", parts: [{ text: message }] },
+    ];
+
+    const response = await axios.post(url, {
+      systemInstruction: { role: "system", parts: [{ text: systemPrompt }] },
+      contents,
+      generationConfig: { temperature: 0.7, maxOutputTokens: 220 },
     });
 
-    return response.content?.[0]?.text?.trim() || fallback;
-  } catch {
+    return (
+      response.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
+      fallback
+    );
+  } catch (err) {
+    console.error("Gemini conversational error:", err.message);
     return fallback;
   }
 }
 
-async function createCreativeBrief({ userMessage, product }) {
-  const fallback = localBrief(product);
-  if (!anthropic) return fallback;
+async function generateScriptWithGemini(userMessage, pageData) {
+  const systemPrompt = `You are a UGC (user-generated content) video script writer.
+You will be given a user's request and scraped data from a product/landing page.
+Analyze the product and write a short, casual, authentic-sounding UGC ad script.
 
-  try {
-    const response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 600,
-      temperature: 0.9,
-      system:
-        "You are a trend-obsessed UGC creative director. You create viral, funny, current UGC short-form video briefs. Use trending concepts like 'Brat Summer', 'Matching my freak', 'Spectacular guy', 'Main character energy', and TikTok-style hooks. The output must be safe to render as text overlays.",
-      messages: [
+Respond ONLY with valid JSON (no markdown fences, no preamble), matching this schema:
+{
+  "product_name": string,
+  "scenes": [
+    {
+      "id": "hook" | "problem" | "solution" | "demo" | "cta",
+      "voiceover": string,       // 1-3 short casual sentences, spoken aloud
+      "on_screen_text": string,  // short caption overlay, <=8 words
+      "visual_idea": string      // what should be shown on screen
+    }
+  ]
+}
+Keep voiceover lines short — each scene should be speakable in 3-6 seconds.
+Tone: relatable, casual, first-person, like a real customer talking to camera.`;
+
+  const userPrompt = `User request: "${userMessage}"
+
+Scraped page data:
+Title: ${pageData.title}
+Description: ${pageData.description}
+Page text (excerpt): ${pageData.bodyText.slice(0, 3000)}
+Source URL: ${pageData.sourceUrl}`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+  const response = await axios.post(
+    url,
+    {
+      systemInstruction: {
+        role: "system",
+        parts: [{ text: systemPrompt }],
+      },
+      contents: [
         {
           role: "user",
-          content: JSON.stringify({
-            task: "Create a 5-10 second UGC-style marketing video brief. Use clever social-video language, not corporate ad copy.",
-            userMessage,
-            product,
-          }),
+          parts: [{ text: userPrompt }],
         },
       ],
-    });
-
-    const raw = response.content?.[0]?.text || "";
-    const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || raw);
-    return normalizeBrief(parsed, product);
-  } catch {
-    return fallback;
-  }
-}
-
-function localConversation(message) {
-  if (/^\s*(hi|hey|hello|yo)\s*[!.]*\s*$/i.test(message)) {
-    return "Hey! Send me a product URL and I’ll turn it into a punchy little UGC video.";
-  }
-
-  if (/what can you do|help|how does this work/i.test(message)) {
-    return "I can generate UGC videos for you. Send me a product URL and I’ll make a short marketing video with a hook, background, audio mood, and GIF overlay.";
-  }
-
-  return "I’m here for UGC videos. Drop a product URL and I’ll assemble a short, social-style promo for it.";
-}
-
-function localBrief(product) {
-  const host = product?.url
-    ? new URL(product.url).hostname.replace(/^www\./, "")
-    : "your product";
-  const productName = product?.title?.split(/[|-]/)[0]?.trim() || host;
-  return normalizeBrief(
-    {
-      productName,
-      audience: "busy people who want the result without the friction",
-      hook: "POV: you found the app that does the annoying part for you",
-      caption:
-        "It gives main-character productivity without the spreadsheet spiral. Very spectacular.",
-      overlayLines: [
-        "POV: the app gets it",
-        "very brat",
-        "spectacular results",
-      ],
-      gifMood: "spectacular guy reaction",
-      audioMood: "brat hyperpop viral beat",
+      generationConfig: {
+        temperature: 0.8,
+        maxOutputTokens: 1500,
+        responseMimeType: "application/json",
+      },
     },
-    product,
+    { headers: { "Content-Type": "application/json" } },
   );
-}
 
-function normalizeBrief(value, product) {
-  const host = product?.url
-    ? new URL(product.url).hostname.replace(/^www\./, "")
-    : "Product";
-  return {
-    productName: String(value.productName || product?.title || host).slice(
-      0,
-      48,
-    ),
-    audience: String(value.audience || "online shoppers").slice(0, 120),
-    hook: String(value.hook || "POV: this makes life easier").slice(0, 80),
-    caption: String(
-      value.caption || "Short, useful, and weirdly satisfying.",
-    ).slice(0, 180),
-    overlayLines: Array.isArray(value.overlayLines)
-      ? value.overlayLines.slice(0, 3).map((line) => String(line).slice(0, 34))
-      : ["POV: this just clicked", "tiny app", "big relief"],
-    gifMood: String(value.gifMood || "happy reaction").slice(0, 40),
-    audioMood: String(value.audioMood || "upbeat pop").slice(0, 40),
-  };
+  const raw = response.data.candidates?.[0]?.content?.parts
+    ?.map((p) => p.text)
+    .join("\n")
+    .trim();
+
+  if (!raw) {
+    throw new Error("Gemini returned no text content");
+  }
+
+  const cleaned = raw.replace(/^```json\s*/i, "").replace(/```$/, "");
+  return JSON.parse(cleaned);
 }
