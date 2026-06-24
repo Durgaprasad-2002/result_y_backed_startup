@@ -12,11 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.PORT || 4000);
 
-app.use(
-  cors({
-    origin: "*",
-  }),
-);
+app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "1mb" }));
 app.use(
   "/videos",
@@ -93,7 +89,6 @@ app.post("/api/chat", async (req, res, next) => {
       take: 20,
     });
 
-    // Set up SSE headers
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -103,7 +98,6 @@ app.post("/api/chat", async (req, res, next) => {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
-    // Initial event
     sendEvent("start", { conversationId: activeConversation.id });
 
     const reply = await handleChatTurn({
@@ -125,7 +119,6 @@ app.post("/api/chat", async (req, res, next) => {
       },
     });
 
-    // Final result event
     sendEvent("done", {
       conversationId: activeConversation.id,
       message: assistantMessage,
@@ -134,11 +127,9 @@ app.post("/api/chat", async (req, res, next) => {
 
     res.end();
   } catch (error) {
-    // If headers haven't been sent yet, we can send a standard 500
     if (!res.headersSent) {
       next(error);
     } else {
-      // If we're in the middle of an SSE stream, send an error event
       res.write(`event: error\n`);
       res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
       res.end();
@@ -150,7 +141,6 @@ app.use((error, req, res, _next) => {
   const errorId = Math.random().toString(36).slice(2, 8);
   console.error(`[Error ${errorId}]`, error);
 
-  // Also log to a file for easier debugging by the user
   try {
     const logMsg = `[${new Date().toISOString()}] [${errorId}] ${error.stack || error.message}\n`;
     const storageDir = path.resolve(__dirname, "../storage");

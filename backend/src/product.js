@@ -29,7 +29,6 @@ export async function readProductPage(url) {
       $('meta[name="description"]').attr("content") ||
       "";
 
-    // Grab visible body text (trimmed, deduped, capped)
     const bodyText = $("body")
       .find("p, li, h1, h2, h3")
       .map((_, el) => $(el).text().trim())
@@ -38,7 +37,6 @@ export async function readProductPage(url) {
       .join(" ")
       .slice(0, 6000);
 
-    // Collect candidate product images (absolute URLs only)
     const images = [];
     $("img").each((_, el) => {
       let src = $(el).attr("src") || $(el).attr("data-src");
