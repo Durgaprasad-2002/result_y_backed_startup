@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { v4 as uuidv4 } from "uuid";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
+import OpenAI from "openai";
 import { prisma } from "./prisma.js";
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -21,11 +22,56 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID =
   process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
 
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
 // ---------------------------------------------------------------------------
-// STEP 3: Generate voiceover audio per scene (ElevenLabs TTS).
+// STEP 1: Generate AI image for a scene (DALL-E)
+// ---------------------------------------------------------------------------
+async function generateAIImage(productName, visualIdea, outFile) {
+  if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === "sk-xxxx")
+    return null;
+
+  try {
+    const prompt = `Create a vibrant, high-quality promotional image for "${productName}". Scene: ${visualIdea}. Style: modern UGC ad, bright colors, clean, professional. No text overlays.`;
+
+    const response = await openai.images.generate({
+      model: "gpt-image-1",
+      prompt,
+      n: 1,
+      size: "1024x1792", // vertical 9:16
+      quality: "low",
+    });
+
+    // gpt-image-1 returns b64_json by default
+    const b64 = response.data[0].b64_json;
+    if (b64) {
+      fs.writeFileSync(outFile, Buffer.from(b64, "base64"));
+      return outFile;
+    }
+
+    // Fallback: URL-based
+    const imageUrl = response.data[0].url;
+    if (imageUrl) {
+      const imageResponse = await axios.get(imageUrl, {
+        responseType: "arraybuffer",
+        timeout: 30000,
+      });
+      fs.writeFileSync(outFile, imageResponse.data);
+      return outFile;
+    }
+
+    return null;
+  } catch (e) {
+    console.warn(`AI image generation failed: ${e.message}`);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// STEP 2: Generate voiceover audio per scene (ElevenLabs TTS)
 // ---------------------------------------------------------------------------
 async function generateVoiceover(text, outFile) {
-  if (!ELEVENLABS_API_KEY) return null; // signal: use silent fallback
+  if (!ELEVENLABS_API_KEY) return null;
 
   const response = await axios.post(
     `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
@@ -58,7 +104,7 @@ function getAudioDurationSeconds(file) {
 }
 
 // ---------------------------------------------------------------------------
-// STEP 4: Download a real product image, or build a generated placeholder
+// STEP 3: Download a scraped product image
 // ---------------------------------------------------------------------------
 async function downloadImage(url, outFile) {
   const response = await axios.get(url, {
@@ -86,7 +132,7 @@ function buildPlaceholderImage(text, outFile) {
 }
 
 // ---------------------------------------------------------------------------
-// STEP 5: Build one scene clip
+// STEP 4: Build one scene clip
 // ---------------------------------------------------------------------------
 function buildSceneClip({
   imageFile,
@@ -128,7 +174,7 @@ function buildSceneClip({
 }
 
 // ---------------------------------------------------------------------------
-// STEP 6: Concatenate all scene clips
+// STEP 5: Concatenate all scene clips
 // ---------------------------------------------------------------------------
 function concatClips(clipFiles, outFile, jobDir) {
   return new Promise((resolve, reject) => {
@@ -142,6 +188,58 @@ function concatClips(clipFiles, outFile, jobDir) {
       .input(listFile)
       .inputOptions(["-f", "concat", "-safe", "0"])
       .outputOptions(["-c", "copy"])
+      .save(outFile)
+      .on("end", () => resolve(outFile))
+      .on("error", reject);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// STEP 6: Generate background music (synth beat via ffmpeg)
+// ---------------------------------------------------------------------------
+function generateBackgroundMusic(outFile, durationSec) {
+  return new Promise((resolve, reject) => {
+    // Upbeat synth pattern: bass pulse + high chime + ambient pad
+    const bass = "0.18*sin(130.81*2*PI*t)*(1-min(1,mod(t*4,1)*8))";
+    const chime = "0.10*sin(523.25*2*PI*t)*(1-min(1,mod(t*2+0.5,1)*10))";
+    const pad = "0.07*sin(392*2*PI*t)*sin(PI*t*0.25)";
+    const hihat = "0.04*random(0)*(1-min(1,mod(t*8,1)*12))";
+    const expr = `${bass}+${chime}+${pad}+${hihat}`;
+
+    ffmpeg()
+      .input(`aevalsrc='${expr}':s=44100:d=${durationSec}`)
+      .inputFormat("lavfi")
+      .audioCodec("aac")
+      .outputOptions(["-b:a", "128k"])
+      .save(outFile)
+      .on("end", () => resolve(outFile))
+      .on("error", reject);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// STEP 7: Mix background music into video
+// ---------------------------------------------------------------------------
+function mixBackgroundMusic(videoFile, musicFile, outFile) {
+  return new Promise((resolve, reject) => {
+    ffmpeg()
+      .input(videoFile)
+      .input(musicFile)
+      .complexFilter([
+        // Background music at 25% volume, fades out last 2 seconds
+        "[1:a]volume=0.25,afade=t=out:st=-2:d=2[bg]",
+      ])
+      .outputOptions([
+        "-map",
+        "0:v",
+        "-map",
+        "[bg]",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-shortest",
+      ])
       .save(outFile)
       .on("end", () => resolve(outFile))
       .on("error", reject);
@@ -166,13 +264,13 @@ export async function generateUgcVideo({
     if (onProgress) onProgress({ status: "processing", message: msg });
   };
 
-  log("Step 3/6: Building scenes (voiceover + visuals)...");
+  log("Step 1/7: Building scenes (visuals + voiceover)...");
   const clipFiles = [];
 
   for (let i = 0; i < script.scenes.length; i++) {
     const scene = script.scenes[i];
     const audioFile = path.join(jobDir, `scene_${i}.mp3`);
-    const imageFile = path.join(jobDir, `scene_${i}.jpg`);
+    const imageFile = path.join(jobDir, `scene_${i}.png`);
     const clipFile = path.join(jobDir, `clip_${i}.mp4`);
 
     if (onProgress) {
@@ -184,7 +282,7 @@ export async function generateUgcVideo({
       });
     }
 
-    // 3a. Voiceover
+    // Voiceover
     const voiceResult = await generateVoiceover(
       scene.voiceover,
       audioFile,
@@ -202,16 +300,35 @@ export async function generateUgcVideo({
       durationSec = Math.max(3, await getAudioDurationSeconds(voiceResult));
     }
 
-    // 3b. Visual — try a scraped product image first, else placeholder slide
+    // Visual — Priority: AI-generated > scraped product image > placeholder
     let visualReady = false;
-    if (pageData.images && pageData.images[i]) {
+
+    // 1. Try AI-generated image (DALL-E)
+    if (!visualReady) {
+      log(`  generating AI image for scene ${i}...`);
+      const aiImage = await generateAIImage(
+        script.product_name,
+        scene.visual_idea,
+        imageFile,
+      );
+      if (aiImage) {
+        visualReady = true;
+        log(`  AI image ready for scene ${i}`);
+      }
+    }
+
+    // 2. Fallback: scraped product image
+    if (!visualReady && pageData.images && pageData.images[i]) {
       try {
         await downloadImage(pageData.images[i], imageFile);
         visualReady = true;
+        log(`  scraped image used for scene ${i}`);
       } catch (e) {
         log(`  image download failed for scene ${i}: ${e.message}`);
       }
     }
+
+    // 3. Fallback: placeholder
     if (!visualReady) {
       try {
         await buildPlaceholderImage(
@@ -220,7 +337,6 @@ export async function generateUgcVideo({
         );
       } catch (e) {
         log(`  placeholder image failed for scene ${i}: ${e.message}`);
-        // Last resort fallback: a plain black image without text
         await new Promise((res, rej) => {
           ffmpeg()
             .input("color=c=black:s=1080x1920:d=1")
@@ -233,7 +349,7 @@ export async function generateUgcVideo({
       }
     }
 
-    // 3c. Compose the scene clip
+    // Compose the scene clip
     await buildSceneClip({
       imageFile,
       audioFile: finalAudioFile,
@@ -246,12 +362,30 @@ export async function generateUgcVideo({
     log(`  scene ${i} (${scene.id}) done -> ${durationSec.toFixed(1)}s`);
   }
 
-  log("Step 4/6: Concatenating scenes...");
+  // Calculate total video duration for background music
+  const totalDuration = script.scenes.length * 4 + 2; // rough estimate
+
+  log("Step 5/7: Concatenating scenes...");
+  const rawVideoName = `${jobId}_raw.mp4`;
+  const rawVideoFile = path.join(jobDir, rawVideoName);
+  await concatClips(clipFiles, rawVideoFile, jobDir);
+
+  log("Step 6/7: Adding background music...");
+  const musicFile = path.join(jobDir, "bgm.m4a");
   const outputName = `${jobId}.mp4`;
   const finalFile = path.join(VIDEOS_DIR, outputName);
-  await concatClips(clipFiles, finalFile, jobDir);
 
-  log("Step 5/6: Done.");
+  try {
+    await generateBackgroundMusic(musicFile, totalDuration);
+    await mixBackgroundMusic(rawVideoFile, musicFile, finalFile);
+    log("  background music added successfully");
+  } catch (e) {
+    log(`  background music failed: ${e.message}, using video without music`);
+    // If music mixing fails, just copy the raw video
+    fs.copyFileSync(rawVideoFile, finalFile);
+  }
+
+  log("Step 7/7: Done.");
 
   const publicUrl = `${PUBLIC_API_URL}/videos/${outputName}`;
 
