@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"npm run dev --workspace backend\" \"npm run dev --workspace frontend\"",
+    "dev": "concurrently --names \"BACK,FRONT\" --prefix-colors \"cyan,magenta\" \"npm run dev --workspace backend\" \"npm run dev --workspace frontend\"",
+    "logs": "tail -f backend/storage/error.log",
     "install:all": "npm install --workspaces",
     "build": "npm run build --workspace backend && npm run build --workspace frontend",
     "prisma:generate": "npm run prisma:generate --workspace backend",

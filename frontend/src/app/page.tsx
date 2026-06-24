@@ -10,7 +10,7 @@ type UiMessage = ChatMessage & { pending?: boolean };
 const starter = [
   "I'm building CalAI, a calorie-tracking app. Here's the site: calai.app",
   "What can you do?",
-  "Make a funny UGC video for linear.app"
+  "Make a funny UGC video for linear.app",
 ];
 
 export default function Home() {
@@ -40,7 +40,10 @@ export default function Home() {
     scrollRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isSending]);
 
-  const canSend = useMemo(() => input.trim().length > 0 && !isSending, [input, isSending]);
+  const canSend = useMemo(
+    () => input.trim().length > 0 && !isSending,
+    [input, isSending],
+  );
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -54,7 +57,7 @@ export default function Home() {
     const optimistic: UiMessage = {
       id: `local-${Date.now()}`,
       role: "USER",
-      content
+      content,
     };
 
     setInput("");
@@ -66,13 +69,16 @@ export default function Home() {
       const response = await sendChatMessage({
         anonymousUserId,
         conversationId,
-        message: content
+        message: content,
       });
 
       setConversationId(response.conversationId);
       setMessages((current) => [...current, response.message]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      console.error(err);
+      setError(
+        "Oops! Something went wrong generating your video. Please try again or modify your URL.",
+      );
     } finally {
       setIsSending(false);
     }
@@ -98,7 +104,12 @@ export default function Home() {
               <p>Product URL in. Short-form video out.</p>
             </div>
           </div>
-          <button className="icon-button" onClick={newChat} aria-label="New chat" title="New chat">
+          <button
+            className="icon-button"
+            onClick={newChat}
+            aria-label="New chat"
+            title="New chat"
+          >
             <Plus size={20} />
           </button>
         </header>
@@ -111,19 +122,25 @@ export default function Home() {
               </div>
               <h2>Send a product and I’ll make the ad.</h2>
               <p>
-                Try a URL, a rough product description, or ask what this can do. The chat is saved
-                to this browser’s anonymous user.
+                Try a URL, a rough product description, or ask what this can do.
+                The chat is saved to this browser’s anonymous user.
               </p>
               <div className="starter-grid">
                 {starter.map((item) => (
-                  <button key={item} onClick={() => setInput(item)} className="starter">
+                  <button
+                    key={item}
+                    onClick={() => setInput(item)}
+                    className="starter"
+                  >
                     {item}
                   </button>
                 ))}
               </div>
             </div>
           ) : (
-            messages.map((message) => <MessageBubble key={message.id} message={message} />)
+            messages.map((message) => (
+              <MessageBubble key={message.id} message={message} />
+            ))
           )}
 
           {isSending ? (
@@ -150,8 +167,16 @@ export default function Home() {
             placeholder="Paste a product URL or say hi..."
             rows={1}
           />
-          <button className="send-button" disabled={!canSend} aria-label="Send message">
-            {isSending ? <Loader2 size={20} className="spin" /> : <ArrowUp size={20} />}
+          <button
+            className="send-button"
+            disabled={!canSend}
+            aria-label="Send message"
+          >
+            {isSending ? (
+              <Loader2 size={20} className="spin" />
+            ) : (
+              <ArrowUp size={20} />
+            )}
           </button>
         </form>
       </section>

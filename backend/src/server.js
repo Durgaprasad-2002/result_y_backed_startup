@@ -1,6 +1,7 @@
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -145,11 +146,39 @@ app.post("/api/chat", async (req, res, next) => {
   }
 });
 
-app.use((error, _req, res, _next) => {
-  console.error(error);
+app.use((error, req, res, _next) => {
+  const errorId = Math.random().toString(36).slice(2, 8);
+  console.error(`[Error ${errorId}]`, error);
+
+  // Also log to a file for easier debugging by the user
+  try {
+    const logMsg = `[${new Date().toISOString()}] [${errorId}] ${error.stack || error.message}\n`;
+    const storageDir = path.resolve(__dirname, "../storage");
+    if (!fs.existsSync(storageDir))
+      fs.mkdirSync(storageDir, { recursive: true });
+    fs.appendFileSync(path.join(storageDir, "error.log"), logMsg);
+  } catch (logErr) {
+    console.error("Failed to write to error log file", logErr);
+  }
+
+  if (res.headersSent) {
+    if (res.getHeader("Content-Type") === "text/event-stream") {
+      res.write(`event: error\n`);
+      res.write(
+        `data: ${JSON.stringify({ error: error.message, errorId })}\n\n`,
+      );
+      res.end();
+    } else {
+      res.end();
+    }
+    return;
+  }
+
   res.status(500).json({
     error: "Something went wrong while generating the response.",
-    detail: process.env.NODE_ENV === "development" ? error.message : undefined,
+    message: error.message,
+    errorId,
+    detail: process.env.NODE_ENV === "development" ? error.stack : undefined,
   });
 });
 

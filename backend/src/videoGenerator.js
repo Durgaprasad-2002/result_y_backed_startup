@@ -71,14 +71,12 @@ async function downloadImage(url, outFile) {
 
 function buildPlaceholderImage(text, outFile) {
   return new Promise((resolve, reject) => {
-    const safeText = text.replace(/['":]/g, "").slice(0, 60);
+    const safeText = text.replace(/[^A-Za-z0-9\s!?.\-]/g, "").slice(0, 60);
     ffmpeg()
       .input("color=c=0x1a1a2e:s=1080x1920:d=1")
       .inputFormat("lavfi")
-      .outputOptions([
-        "-frames:v",
-        "1",
-        "-vf",
+      .outputOptions(["-frames:v", "1"])
+      .videoFilters([
         `drawtext=text='${safeText}':fontcolor=white:fontsize=54:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10`,
       ])
       .save(outFile)
@@ -98,29 +96,31 @@ function buildSceneClip({
   outFile,
 }) {
   return new Promise((resolve, reject) => {
-    const safeCaption = captionText.replace(/['":]/g, "").slice(0, 80);
+    const safeCaption = captionText
+      .replace(/[^A-Za-z0-9\s!?.\-]/g, "")
+      .slice(0, 80);
     const cmd = ffmpeg().input(imageFile).loop(durationSec);
 
     if (audioFile) cmd.input(audioFile);
 
-    const vf = [
+    const vfFilters = [
       "scale=1080:1920:force_original_aspect_ratio=increase",
       "crop=1080:1920",
       `drawtext=text='${safeCaption}':fontcolor=white:fontsize=46:box=1:boxcolor=black@0.5:boxborderw=12:x=(w-text_w)/2:y=h-300`,
-    ].join(",");
+    ];
 
     cmd
-      .outputOptions([
-        "-vf",
-        vf,
-        "-t",
-        String(durationSec),
-        "-pix_fmt",
-        "yuv420p",
-        ...(audioFile ? [] : ["-f", "lavfi"]),
-      ])
-      .videoCodec("libx264")
-      .audioCodec(audioFile ? "aac" : undefined)
+      .videoFilters(vfFilters)
+      .outputOptions(["-t", String(durationSec), "-pix_fmt", "yuv420p"])
+      .videoCodec("libx264");
+
+    if (audioFile) {
+      cmd.audioCodec("aac");
+    } else {
+      cmd.noAudio();
+    }
+
+    cmd
       .save(outFile)
       .on("end", () => resolve(outFile))
       .on("error", reject);
@@ -213,10 +213,24 @@ export async function generateUgcVideo({
       }
     }
     if (!visualReady) {
-      await buildPlaceholderImage(
-        scene.visual_idea || scene.on_screen_text,
-        imageFile,
-      );
+      try {
+        await buildPlaceholderImage(
+          scene.visual_idea || scene.on_screen_text,
+          imageFile,
+        );
+      } catch (e) {
+        log(`  placeholder image failed for scene ${i}: ${e.message}`);
+        // Last resort fallback: a plain black image without text
+        await new Promise((res, rej) => {
+          ffmpeg()
+            .input("color=c=black:s=1080x1920:d=1")
+            .inputFormat("lavfi")
+            .outputOptions(["-frames:v", "1"])
+            .save(imageFile)
+            .on("end", res)
+            .on("error", rej);
+        });
+      }
     }
 
     // 3c. Compose the scene clip
